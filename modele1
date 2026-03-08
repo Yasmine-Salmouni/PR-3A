@@ -1,6 +1,5 @@
 import csv
 import os
-import time
 from collections import defaultdict
 from datetime import datetime
 
@@ -258,9 +257,7 @@ def solve_reincorporation(stock_file, plan_file, seuil_reincorpo_mini=100.0):
     # 6. Résolution
     # -----------------------------------------------------------------
     print("Résolution en cours...")
-    t_start = time.time()
     status = solver.Solve()
-    t_end = time.time()
 
     status_map = {
         pywraplp.Solver.OPTIMAL: "OPTIMAL",
@@ -269,8 +266,7 @@ def solve_reincorporation(stock_file, plan_file, seuil_reincorpo_mini=100.0):
         pywraplp.Solver.UNBOUNDED: "UNBOUNDED",
         pywraplp.Solver.NOT_SOLVED: "NOT_SOLVED",
     }
-    print(f"Statut : {status_map.get(status, status)}")
-    print(f"Temps de résolution : {t_end - t_start:.3f} secondes\n")
+    print(f"Statut : {status_map.get(status, status)}\n")
 
     if status not in (pywraplp.Solver.OPTIMAL, pywraplp.Solver.FEASIBLE):
         print("Aucune solution trouvée.")
