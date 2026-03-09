@@ -1,4 +1,4 @@
-# Mise en œuvre de la Relaxation Lagrangienne
+# Relaxation Lagrangienne
 
 L'objectif est de décomposer le problème global en ignorant temporairement la contrainte de stock, tout en pénalisant son dépassement.
 
@@ -16,7 +16,7 @@ On part de votre objectif initial qui est de maximiser le volume de ré-incorpor
 
 On retire la contrainte de stock: $\sum_{p \in P} \sum_{dp \in DP} R_{c,dc,p,dp} \le stock\_proj\_chute_{c,dc}$
 
-Et on l'insère dans l'objectif avec un **multiplicateur de Lagrange** $\lambda_{c,dc} \ge 0$.
+Et on l'insère dans l'objectif avec un **multiplicateur de Lagrange** $\lambda_{c,dc} \ge 0$. 
 
  La fonction devient :
 
@@ -29,6 +29,7 @@ $L(R, O, \lambda) = \sum_{c} \sum_{dc} (\sum_{p} \sum_{dp} (R_{c,dc,p,dp} - O_{p
 Pour que la fonction $L$ (le Lagrangien) donne une solution correcte, il faut connaître les **valeurs exactes** des multiplicateurs $\lambda_{c,dc}$.
 • Ces multiplicateurs représentent le "juste prix" de la rareté de chaque chute.
 • Si vous fixez $\lambda$ au hasard (par exemple à 0 ou à une valeur fixe), l'optimisation va soit ignorer totalement le stock (si $\lambda$ est trop bas), soit ne rien recycler du tout (si $\lambda$ est trop haut).
+
 • **L'étape A et l'étape B**, intégrées dans un algorithme, servent justement à "chercher" les bonnes valeurs de $\lambda$ par tâtonnements mathématiques.
 
 **Étape A : Résolution du sous-problème (Borne Duale)**
@@ -44,10 +45,16 @@ Pour que la fonction $L$ (le Lagrangien) donne une solution correcte, il faut co
 **Étape C : Calcul du "Gap"**
 • On calcule l'écart : $Gap = Z_{dual} - Z_{primal}$.
 • Si cet écart est très petit (inférieur à un seuil $\epsilon$), on s'arrête : la solution est quasi-optimale.
+
+**SINON** 
+
 **Étape D : Mise à jour des pénalités (Le réglage)**
 C'est l'étape cruciale. On ajuste les $\lambda$ pour l'itération $k+1$ en observant les violations de contraintes de l'Étape A :
-• **Si une chute a été surconsommée** ($\sum R > stock$) : On **augmente** $\lambda_{c,dc}$. La chute devient plus "chère", ce qui forcera l'Étape A à moins l'utiliser à la prochaine itération.
-• **Si une chute a été sous-consommée** ($\sum R < stock$) : On **diminue** $\lambda_{c,dc}$. La chute devient "moins chère", encourageant son utilisation.
+
+pour un c,dc
+
+• **Si une chute a été surconsommée** ($\sum_{p\in P}\sum_{dp\in DP}R_{c,dc,p,dp} > stock\_proj\_chute_{c,dc}$) : On **augmente** $\lambda_{c,dc}$. La chute devient plus "chère", ce qui forcera l'Étape A à moins l'utiliser à la prochaine itération.
+• **Si une chute a été sous-consommée** ($\sum_{p\in P}\sum_{dp\in DP}R_{c,dc,p,dp} < stock\_proj\_chute_{c,dc}$) : On **diminue** $\lambda_{c,dc}$. La chute devient "moins chère", encourageant son utilisation.
 
 ---
 
@@ -71,7 +78,7 @@ Le gain d'une chute $c$ pour une production $(p, dp)$ se calcule ainsi :
 
 **La formule du score local :**
 
-$Score(c) = [(1 - \lambda_{c,dc}) \times reincorpo\_maxi_{p,dp,c}] - 1$
+$Score_{p,dp,c,dc} = [(1 - \lambda_{c,dc}) \times reincorpo\_maxi_{p,dp,c}] - 1​$
 
 ### La règle de sélection (L'Optimisation)
 
@@ -92,10 +99,10 @@ Pour un $(p, dp)$ donné, vous comparez tous les scores obtenus pour les différ
 
 **La Formule de la Borne Duale $Z_{dual}$**
 
-$Z_{dual}(\lambda) = \sum_{p \in P} \sum_{dp \in DP} \max_{c \in C \cup \{0\}} \left( \text{Score}_{p,dp,c} \right) + \sum_{c \in C} \sum_{dc \in DC} (\lambda_{c,dc} \times stock\_proj\_chute_{c,dc})$
+$Z_{dual}(\lambda) = \sum_{p \in P} \sum_{dp \in DP} \max \left( 0, \max_{\substack{c \in C, dc \in DC \\ dp \in dc}} \{ Score_{p,dp,c,dc} \} \right) + \sum_{c \in C} \sum_{dc \in DC} (\lambda_{c,dc} \times stock\_proj\_chute_{c,dc})$
 
 Le chiffre final est votre **Borne Duale**. C'est une borne "optimiste" car, à ce stade, vous avez peut-être utilisé $1500$ kg d'une chute alors que vous n'en aviez que $1000$ kg en stock. C'est l'**Étape B** qui viendra corriger cela.
-Chaque sous-problème voit seulement son propre gain : $(1 - \lambda) \times R - 1$.Le sous-problème ne sait pas ce que les autres sous-problèmes ont décidé.
+Chaque sous-problème voit seulement son propre gain : $(1 - \lambda) \times R - 1$. Le sous-problème ne sait pas ce que les autres sous-problèmes ont décidé.
 
 ## Étape B : Phase de réparation
 
@@ -107,21 +114,27 @@ Comme nous l'avons vu, l'Étape A peut aboutir à une surconsommation de chutes 
 
 Puisque le problème est complexe, on utilise généralement une approche gloutonne pour transformer la solution de l'étape A en solution réalisable :
 
-### **Étape B.1 : Trier les propositions de l'étape A**
+**B1 : Faire la file d'attente (Le Tri)**
 
-On liste toutes les décisions où $O_{p,dp,c} = 1$ issues de l'étape A. On peut les trier par "priorité" ou par volume de ré-incorporation décroissant.
-Étape B.2 : Allouer le stock réel par chute
+À l'étape A, plusieurs productions ont demandé la même chute $c$ parce qu'elles en avaient besoin au même moment. Si on additionne toutes ces demandes, on dépasse souvent le stock disponible.
+B1 sert à décider qui passe en premier.
 
-Pour chaque chute $c$ et fenêtre $dc$, on parcourt les demandes de production:
+On fixe c,dc
+• Tu listes toutes les productions qui ont dit "Je veux la chute $c$" (celles où $O_{p,dp,c} = 1$).
+• Tu les classes, par exemple, de la plus grosse demande à la plus petite.
+• **Pourquoi ?** Parce que si tu n'as pas assez de gomme pour tout le monde, tu préfères servir en priorité ceux qui recyclent de gros volumes pour atteindre ton objectif de maximisation.
 
-1. **Vérification du stock** : On compare la somme des volumes $R_{c,dc,p,dp}$ demandés au `stock_proj_chute_{c,dc}` réel.
-2. **Si le stock est suffisant** : On valide la ré-incorporation telle quelle.
-3. **Si le stock est insuffisant** :
-    1- On réduit le volume $R$ pour qu'il ne dépasse pas le stock restant.
-    2- **Condition de seuil** : On vérifie que ce nouveau volume réduit est toujours supérieur ou égal au `seuil_reincorpo_mini`.
-    3- Si le volume descend sous le seuil, on doit annuler cette ré-incorporation spécifique ($O = 0$ et $R = 0$).
+**B2 : Distribuer la gomme (L'Allocation)**
+Maintenant que tu as ta file d'attente, tu prends ton carnet de stock réel (`stock_proj_chute`) et tu distribues la matière.
+**Pour chaque production dans la file d'attente :**
+1. **Regarder le stock :** Est-ce qu'il reste assez de chute $c$ dans le réservoir ? 
+2. **Servir :**
+    ◦ S'il reste assez de stock : Tu donnes le volume demandé ($R_{c,dc,p,dp}$).
+    ◦ S'il ne reste qu'un peu de stock : Tu donnes ce qu'il reste (le reliquat).
+3. **Vérifier le seuil :** Si ce que tu donnes est plus petit que le `seuil_reincorpo_mini`, alors tu annules tout pour cette production (on ne lance pas une machine pour seulement 2 kg de gomme).
+4. **Mettre à jour :** Tu soustrais ce que tu as donné de ton stock et tu passes à la personne suivante dans la file d'attente.
 
-### **Étape B.3 : Respecter l'unicité par produit**
+**Étape B.3 : Respecter l'unicité par produit**
 
 On s'assure qu'une production donnée $(p, dp)$ n'utilise bien qu'**une seule chute** au maximum, conformément à la contrainte (4) du document.
 
@@ -136,3 +149,35 @@ Une fois ce tri et ces coupes effectués, vous obtenez un ensemble de variables 
 Vous calculez alors la valeur de votre fonction objectif avec ces chiffres "réels" :
 
 **$Z_{primal} = \sum \sum \sum \sum (R_{c,dc,p,dp} - O_{p,dp,c})$**
+
+---
+
+## Etape D:
+
+A la première itération les lambdas sont initialisés à 0.
+L'étape **D** est le cerveau de l'algorithme : c'est elle qui apprend de ses erreurs pour guider le modèle vers la solution optimale. 
+
+pour chaque itération
+
+**1. Mesurer l'erreur de stock (Le Sous-Gradient)**
+Pour chaque couple chute/fenêtre $(c, dc)$, on calcule l'écart entre ce que l'Étape A a "rêvé" de consommer et ce qui est réellement disponible en stock. Cet écart est appelé le **sous-gradient** ($g_{c,dc}$) :
+$g_{c,dc}^{(k)} = \left( \sum_{p \in P} \sum_{dp \in DP} R_{c,dc,p,dp}^{(k)} \right) - stock\_proj\_chute_{c,dc}$
+
+**Si $g_{c,dc} > 0$** : Il y a surconsommation (violation de la contrainte). La pénalité doit augmenter.
+**Si $g_{c,dc} < 0$** : Il y a sous-consommation (le stock n'est pas pleinement utilisé). La pénalité doit diminuer.
+
+**2. Calculer le "Pas" de réglage ($\theta$)**
+On ne change pas les pénalités de manière brute. On utilise un multiplicateur appelé le **pas d'apprentissage** ($\theta^{(k)}$). Il définit la force avec laquelle on réagit à l'erreur de stock.
+Une méthode classique (méthode d'Held-Karp) consiste à calculer ce pas ainsi :                             $\theta^{(k)} = \alpha \cdot \frac{Z_{dual}^{(k)} - Z_{best\_primal}}{\sum (g_{c,dc}^{(k)})^2}$                                                                                                                                          
+
+- **$Z_{dual} - Z_{best\_primal}$** : Représente l'écart (le Gap) entre votre borne supérieure et votre meilleure borne inférieure trouvée à l'étape B. (pourquoi best?)
+- **$\alpha$** : Un paramètre de vitesse (commence souvent à 2.0). Si la borne duale ne s'améliore pas après quelques tours, on divise $\alpha$ par 2 pour affiner le réglage.
+
+**Conseil type** : Divisez $\alpha$ par deux si la Borne Duale ne s'est pas améliorée (n'a pas diminué) pendant **10 itérations consécutives**.
+
+**3. Appliquer la mise à jour**
+On met à jour la pénalité pour l'itération suivante ($k+1$) avec la règle suivante:
+
+$\lambda_{c,dc}^{(k+1)} = \max\left( 0, \lambda_{c,dc}^{(k)} + \theta^{(k)} \cdot g_{c,dc}^{(k)} \right)$
+• **Le $\max(0, \dots)$** : Est crucial car un multiplicateur de Lagrange ne peut jamais être négatif. Si le calcul donne un chiffre négatif, on le remet à 0 (la ressource est considérée comme gratuite car abondante).
+• **L'effet de levier** : Plus la violation de stock est grande (gros surplus de consommation), plus $\lambda$ augmentera fortement pour "calmer" les ardeurs de l'étape A au tour suivant.
