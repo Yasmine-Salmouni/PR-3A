@@ -297,31 +297,31 @@ def solve_reincorporation(stock_file, plan_file, seuil_reincorpo_mini=100.0):
     print()
 
     # Détail par chute
-    print("-" * 70)
-    print("DÉTAIL PAR CHUTE")
-    print("-" * 70)
-    for c in C:
-        vol_c = sum(R[k].solution_value() for k in R if k[0] == c)
-        stock_c = sum(v for (c2, _), v in stock_proj_chute.items() if c2 == c)
-        if vol_c > 0.01:
-            print(f"\n  {c}  (stock: {stock_c:.0f} kg → ré-incorporé: {vol_c:.0f} kg)")
-            for key in sorted(R):
-                if key[0] == c and R[key].solution_value() > 0.01:
-                    c_, dc_, p_, dp_ = key
-                    dmc, dlc = dc_
-                    print(
-                        f"    R[{c_}, ({dmc.date()}, {dlc.date()}), "
-                        f"{p_}, {dp_.date()}] = {R[key].solution_value():.2f} kg"
-                    )
+    # print("-" * 70)
+    # print("DÉTAIL PAR CHUTE")
+    # print("-" * 70)
+    # for c in C:
+    #     vol_c = sum(R[k].solution_value() for k in R if k[0] == c)
+    #     stock_c = sum(v for (c2, _), v in stock_proj_chute.items() if c2 == c)
+    #     if vol_c > 0.01:
+    #         print(f"\n  {c}  (stock: {stock_c:.0f} kg → ré-incorporé: {vol_c:.0f} kg)")
+    #         for key in sorted(R):
+    #             if key[0] == c and R[key].solution_value() > 0.01:
+    #                 c_, dc_, p_, dp_ = key
+    #                 dmc, dlc = dc_
+    #                 print(
+    #                     f"    R[{c_}, ({dmc.date()}, {dlc.date()}), "
+    #                     f"{p_}, {dp_.date()}] = {R[key].solution_value():.2f} kg"
+    #                 )
 
     # Détail des activations
-    print(f"\n{'-' * 70}")
-    print("ACTIVATIONS (O = 1)")
-    print("-" * 70)
-    for key in sorted(O):
-        if O[key].solution_value() > 0.5:
-            p, dp, c = key
-            print(f"    O[{p}, {dp.date()}, {c}] = 1")
+    # print(f"\n{'-' * 70}")
+    # print("ACTIVATIONS (O = 1)")
+    # print("-" * 70)
+    # for key in sorted(O):
+    #     if O[key].solution_value() > 0.5:
+    #         p, dp, c = key
+    #         print(f"    O[{p}, {dp.date()}, {c}] = 1")
 
     print(f"\n{'=' * 70}")
     return solver

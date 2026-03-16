@@ -1,0 +1,42 @@
+# Requirements pour les modèles d'optimisation de ré-incorporation des chutes
+# Installation : pip install -r requirements.txt
+# Note : GLPK et Gurobi nécessitent des installations séparées
+
+# Bibliothèques standards (généralement déjà installées)
+# csv
+# os  
+# time
+# collections
+# datetime
+
+# Solveur OR-Tools pour le modèle initial
+ortools>=9.8.3296
+
+# Solveur IBM Cplex pour le modèle Cplex
+cplex>=22.1.0
+
+# Solveur GLPK via Pyomo pour le modèle GLPK
+pyomo>=6.6.0
+
+# Solveur Gurobi pour le modèle Gurobi
+gurobipy>=10.0.0
+
+# Solveur PuLP avec CBC pour le modèle PuLP/CBC
+pulp>=2.7.0
+
+# Bibliothèques scientifiques et de manipulation de données (utilisées dans relaxation_lagrangienne.py)
+numpy>=1.24.0
+pandas>=2.0.0
+matplotlib>=3.7.0
+scipy>=1.10.0
+
+# Bibliothèques optionnelles pour l'analyse et la visualisation
+# (peuvent être utiles pour analyser les résultats)
+seaborn>=0.12.0
+jupyter>=1.0.0
+notebook>=6.5.0
+
+# Pour le développement et le débogage (optionnel)
+# pytest>=7.0.0
+# black>=23.0.0
+# flake8>=6.0.0

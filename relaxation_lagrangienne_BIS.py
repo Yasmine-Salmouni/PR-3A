@@ -77,20 +77,22 @@ def load_plan_production(filepath):
 
 
 # =============================================================================
-# Relaxation Lagrangienne
+# Relaxation Lagrangienne BIS (selon l'article Fisher 1985)
 # =============================================================================
 
-def solve_lagrangian(stock_file, plan_file, seuil_reincorpo_mini=100.0,
-                     alpha_init=2.0, epsilon=1):
+def solve_lagrangian_bis(stock_file, plan_file, seuil_reincorpo_mini=100.0,
+                       alpha_init=0.1, epsilon=0.01, max_iterations=100):
     """
-    Résout le modèle de ré-incorporation par relaxation lagrangienne.
+    Résout le modèle de ré-incorporation par relaxation lagrangienne
+    selon la méthodologie de Fisher (1985).
 
     Args:
         stock_file:            chemin vers Stock_proj_chute.csv
         plan_file:             chemin vers Plan de production.csv
         seuil_reincorpo_mini:  masse minimale (kg) pour engager une activation
-        alpha_init:            pas initial du sous-gradient
+        alpha_init:            pas initial du sous-gradient (fixé à 2.0)
         epsilon:               seuil de convergence sur le gap
+        max_iterations:         nombre maximum d'itérations (300)
     """
     
     # Variable globale pour gérer l'interruption
@@ -139,7 +141,7 @@ def solve_lagrangian(stock_file, plan_file, seuil_reincorpo_mini=100.0,
                 options[(p, dp)].append((c, dc, maxi))
 
     print("=" * 70)
-    print("RELAXATION LAGRANGIENNE — RÉ-INCORPORATION DES CHUTES")
+    print("RELAXATION LAGRANGIENNE BIS — MÉTHODE FISHER (1985)")
     print("=" * 70)
     print(f"  Nombre de chutes (|C|)              : {len(C)}")
     print(f"  Nombre de produits (|P|)            : {len(P)}")
@@ -165,23 +167,67 @@ def solve_lagrangian(stock_file, plan_file, seuil_reincorpo_mini=100.0,
     print()
     print(f"  Nombre de sous-problèmes (p, dp)    : {len(options)}")
     print(f"  Epsilon (critère d'arrêt)           : {epsilon}")
+    print(f"  Nombre maximum d'itérations         : {max_iterations}")
     print()
     print("Résolution en cours...")
     print()
 
-    best_primal = -float("inf")
+    # -----------------------------------------------------------------
+    # Step 1 & 2 : Solution initiale valide pour Z_best_primal
+    # -----------------------------------------------------------------
+    # Créer un plan simple qui respecte les stocks
+    Z_best_primal = -float("inf")
     best_R_primal = {}
     best_O_primal = {}
-    alpha = alpha_init
-    no_improve_count = 0
+    
+    # Plan simple : alimenter seulement les 3 premières productions avec stock suffisant
+    remaining_stock = dict(stock_proj_chute)
+    used_pdp = set()
+    
+    simple_plan_R = {}
+    simple_plan_O = {}
+    
+    for (p, dp), opts in sorted(options.items())[:3]:  # 3 premières productions
+        best_score = 0.0
+        best_choice = None
+        
+        for (c, dc, maxi) in opts:
+            avail = remaining_stock.get((c, dc), 0.0)
+            if avail >= seuil_reincorpo_mini and avail >= maxi:
+                score = maxi - 1.0  # Score simple sans lambda
+                if score > best_score:
+                    best_score = score
+                    best_choice = (c, dc, maxi)
+        
+        if best_choice:
+            c, dc, maxi = best_choice
+            simple_plan_R[(c, dc, p, dp)] = maxi
+            simple_plan_O[(p, dp, c)] = 1
+            remaining_stock[(c, dc)] -= maxi
+            used_pdp.add((p, dp))
+    
+    # Calculer le gain de ce plan simple
+    if simple_plan_R:
+        Z_best_primal = sum(simple_plan_R.values()) - len(simple_plan_O)
+        best_R_primal = dict(simple_plan_R)
+        best_O_primal = dict(simple_plan_O)
+    
+    print(f"  Solution initiale Z_best_primal : {Z_best_primal:.2f}")
 
     # -----------------------------------------------------------------
-    # 2. Initialisation des multiplicateurs de Lagrange
+    # Step 3 : Initialisation des multiplicateurs et paramètres
     # -----------------------------------------------------------------
-    # λ[c, dc] >= 0 pour chaque chute c et fenêtre dc
+    k = 1
+    alpha = alpha_init
+    # Initialiser λ à 0.1 comme dans le code de l'auteure
     lam = {}
     for (c, dc) in stock_proj_chute:
-        lam[(c, dc)] = 0.0
+        lam[(c, dc)] = 0.1
+
+    # Compteur pour la règle des 5 itérations consécutives
+    no_improve_count = 0
+    last_Z_dual = -float("inf")
+    best_Z_dual_ever = float("inf")  # Record absolu du meilleur Z_dual
 
     t_start = time.time()
 
@@ -190,31 +236,19 @@ def solve_lagrangian(stock_file, plan_file, seuil_reincorpo_mini=100.0,
     #       f"  |  {'Meilleur':>12s}  |  {'Gap':>10s}  |  {'α':>8s}")
     # print("  " + "-" * 80)
 
-    for iteration in itertools.count(1):
+    for iteration in range(1, max_iterations + 1):
         
         # Vérifier l'interruption avant chaque itération
         if interrupted:
             break
-            
-        # Filet de sécurité : arrêt après 5000 itérations
-        if iteration > 5000:
-            print(f"\n  Arrêt de sécurité après {iteration} itérations (gap = {gap:.4f})")
-            break
 
         # =============================================================
-        # ÉTAPE A : Résolution des sous-problèmes (Borne Duale)
+        # Step 4 & 5 : Résolution des sous-problèmes (Étape A de Score)
         # =============================================================
-        # Pour chaque (p, dp), on cherche la meilleure chute c à
-        # ré-incorporer en maximisant le score net.
-        #
-        # Score(c) = (1 - λ[c,dc]) × reincorpo_maxi[p,dp,c] - 1
-        #
-        # On sélectionne la chute avec le meilleur score > 0.
-        # Sinon, O = 0 et R = 0 pour ce créneau.
-
-        R_A = {}                       # (c, dc, p, dp) -> volume
-        O_A = {}                       # (p, dp, c) -> 1
-        usage_A = defaultdict(float)   # (c, dc) -> somme des R_A
+        # Pour chaque production (p, dp), calcule le Score = [(1 - lambda) * reincorpo_max] - 1
+        R_brut = {}                       # (c, dc, p, dp) -> volume
+        O_brut = {}                       # (p, dp, c) -> 1
+        usage_brut = defaultdict(float)   # (c, dc) -> somme des R_brut
         sum_best_scores = 0.0
 
         for (p, dp), opts in options.items():
@@ -229,105 +263,122 @@ def solve_lagrangian(stock_file, plan_file, seuil_reincorpo_mini=100.0,
 
             if best_choice is not None:
                 c, dc, maxi = best_choice
-                O_A[(p, dp, c)] = 1
-                R_A[(c, dc, p, dp)] = maxi
-                usage_A[(c, dc)] += maxi
+                O_brut[(p, dp, c)] = 1
+                R_brut[(c, dc, p, dp)] = maxi
+                usage_brut[(c, dc)] += maxi
                 sum_best_scores += best_score
 
-        # Z_dual = Σ best_scores + Σ λ[c,dc] × stock[c,dc]
+        # =============================================================
+        # Step 6 : Borne Duale
+        # =============================================================
+        # Z_dual = Σ (λ × stock) + Σ (Scores Max Positifs)
         lambda_stock_sum = sum(
             lam[key] * stock_proj_chute[key] for key in stock_proj_chute
         )
-        Z_dual = sum_best_scores + lambda_stock_sum
+        Z_dual = lambda_stock_sum + sum_best_scores
 
         # =============================================================
-        # ÉTAPE B : Heuristique de réparation (Borne Primale)
+        # Step 7 : Test de Faisabilité strict + Heuristique de réparation
         # =============================================================
+        # Vérifier si Σ R_brut ≤ stock_proj_chute pour toutes les chutes
+        feasible = True
+        for (c, dc), stock_disponible in stock_proj_chute.items():
+            utilisation = usage_brut.get((c, dc), 0.0)
+            if utilisation > stock_disponible + 1e-6:  # Tolérance numérique
+                feasible = False
+                break
+        
+        if feasible:
+            # Solution naturellement valide
+            Z_primal = sum(R_brut.values()) - len(O_brut)
+            if Z_primal > Z_best_primal:
+                Z_best_primal = Z_primal
+                best_R_primal = dict(R_brut)
+                best_O_primal = dict(O_brut)
+        else:
+            # Solution non-faisable : appliquer l'heuristique de réparation
+            # pour trouver une meilleure valeur Meilleur
+            R_repare = {}
+            O_repare = {}
+            remaining_stock = dict(stock_proj_chute)
+            
+            # Appliquer le même principe que l'heuristique gloutonne initiale
+            for (p, dp), opts in sorted(options.items()):
+                best_score = -float("inf")
+                best_choice = None
+                
+                for (c, dc, maxi) in opts:
+                    avail = remaining_stock.get((c, dc), 0.0)
+                    if avail >= seuil_reincorpo_mini and avail >= maxi:
+                        # Score sans lambda (heuristique pure)
+                        score = maxi - 1.0
+                        if score > best_score:
+                            best_score = score
+                            best_choice = (c, dc, maxi)
+                
+                if best_choice:
+                    c, dc, maxi = best_choice
+                    R_repare[(c, dc, p, dp)] = maxi
+                    O_repare[(p, dp, c)] = 1
+                    remaining_stock[(c, dc)] -= maxi
+            
+            # Calculer le score de la solution réparée
+            if R_repare:
+                Z_primal_repare = sum(R_repare.values()) - len(O_repare)
+                if Z_primal_repare > Z_best_primal:
+                    Z_best_primal = Z_primal_repare
+                    best_R_primal = dict(R_repare)
+                    best_O_primal = dict(O_repare)
 
-        # B.1 : Lister et trier les activations par volume décroissant
-        activations = []
-        for (c, dc, p, dp), vol in R_A.items():
-            activations.append((c, dc, p, dp, vol))
-        activations.sort(key=lambda x: -x[4])
+        # =============================================================
+        # Step 8 : Sous-gradient et Mise à jour
+        # =============================================================
+        
+        # Test d'arrêt
+        gap = Z_dual - Z_best_primal
+        if gap <= epsilon:
+            print(f"\n  Convergence atteinte (gap = {gap:.4f} ≤ ε = {epsilon})")
+            break
 
-        # B.2 : Allouer le stock réel
-        remaining_stock = dict(stock_proj_chute)
-        R_B = {}
-        O_B = {}
-        used_pdp = set()   # pour unicité (p, dp)
-
-        for (c, dc, p, dp, vol) in activations:
-            # B.3 : Unicité — une seule chute par (p, dp)
-            if (p, dp) in used_pdp:
-                continue
-
-            avail = remaining_stock.get((c, dc), 0.0)
-            actual_vol = min(vol, avail)
-
-            # Vérifier le seuil minimal
-            if actual_vol >= seuil_reincorpo_mini:
-                R_B[(c, dc, p, dp)] = actual_vol
-                O_B[(p, dp, c)] = 1
-                remaining_stock[(c, dc)] = avail - actual_vol
-                used_pdp.add((p, dp))
-            # sinon : annuler cette activation (O = 0, R = 0)
-
-        # Borne Primale : Z_primal = Σ R - Σ O
-        Z_primal = sum(R_B.values()) - len(O_B)
-
-        # Mise à jour de la meilleure solution primale
-        if Z_primal > best_primal:
-            best_primal = Z_primal
-            best_R_primal = dict(R_B)
-            best_O_primal = dict(O_B)
+        # Mise à jour de α : règle des 5 itérations consécutives basée sur le record absolu
+        if Z_dual < best_Z_dual_ever - 1e-6:  # Nouveau record absolu
+            best_Z_dual_ever = Z_dual
             no_improve_count = 0
         else:
             no_improve_count += 1
+            if no_improve_count >= 5:
+                alpha = alpha / 2.0
+                no_improve_count = 0
+                print(f"  α réduit à {alpha:.4f} après 5 itérations sans battre le record")
+        
+        last_Z_dual = Z_dual
 
-        # =============================================================
-        # ÉTAPE C : Calcul du Gap
-        # =============================================================
-        gap = Z_dual - best_primal
-
-        # Commenté : Affichage des itérations avec dual au lieu de primal
-        # if iteration <= 10 or iteration % 10 == 0 or gap < epsilon:
-        #     print(
-        #         f"  {iteration:5d}  |  {Z_dual:12.2f}  |  {Z_dual:12.2f}"
-        #         f"  |  {best_primal:12.2f}  |  {gap:10.2f}  |  {alpha:8.4f}"
-        #     )
-
-        if gap < epsilon:
-            print(f"\n  Convergence atteinte (gap = {gap:.4f} < ε = {epsilon})")
-            break
-
-        # =============================================================
-        # ÉTAPE D : Mise à jour des multiplicateurs (sous-gradient)
-        # =============================================================
-        # g[c,dc] = Σ_{p,dp} R_A[c,dc,p,dp] - stock[c,dc]
-        # Si surconsommation (g > 0) → λ augmente (chute plus "chère")
-        # Si sous-consommation (g < 0) → λ diminue (chute moins "chère")
+        # Calcul des erreurs g
         g = {}
         sum_g2 = 0.0
         for (c, dc) in stock_proj_chute:
-            g[(c, dc)] = usage_A.get((c, dc), 0.0) - stock_proj_chute[(c, dc)]
+            g[(c, dc)] = usage_brut.get((c, dc), 0.0) - stock_proj_chute[(c, dc)]
             sum_g2 += g[(c, dc)] ** 2
 
         if sum_g2 < 1e-12:
             print(f"\n  Sous-gradient nul à l'itération {iteration}.")
             break
 
-        # Pas du sous-gradient (méthode d'Held-Karp)
-        # θ^(k) = α * (Z_dual^(k) - Z_best_primal) / Σ(g_c,dc^(k))^2
-        step = alpha * (Z_dual - best_primal) / sum_g2
+        # Calcul du pas t_k
+        step = (alpha * (Z_dual - Z_best_primal)) / sum_g2
 
+        # Nouveaux prix λ
         for (c, dc) in lam:
             lam[(c, dc)] = max(0.0, lam[(c, dc)] + step * g[(c, dc)])
 
-        # Réduction de alpha si pas d'amélioration depuis 10 itérations (conformément au modèle théorique)
-        if no_improve_count > 0 and no_improve_count % 10 == 0:
-            alpha *= 0.5
-            
-        # Vérifier l'interruption après la mise à jour des multiplicateurs
+        # Commenté : Affichage des itérations
+        # if iteration <= 10 or iteration % 10 == 0 or gap < epsilon:
+        #     print(
+        #         f"  {iteration:5d}  |  {Z_dual:12.2f}  |  {Z_best_primal:12.2f}"
+        #         f"  |  {Z_best_primal:12.2f}  |  {gap:10.2f}  |  {alpha:8.4f}"
+        #     )
+        
+        # Vérifier l'interruption après la mise à jour
         if interrupted:
             break
 
@@ -337,32 +388,27 @@ def solve_lagrangian(stock_file, plan_file, seuil_reincorpo_mini=100.0,
     if interrupted:
         status = "INTERRUPTED"
         print(f"\n  Statut : {status} (arrêt par l'utilisateur)")
-    elif iteration > 5000:
-        status = "LIMIT_REACHED"
-        print(f"\n  Statut : {status} (limite de sécurité atteinte)")
-    elif gap < epsilon:
+    elif gap <= epsilon:
         status = "OPTIMAL"
-    elif best_primal > -float("inf"):
-        status = "FEASIBLE"
+    elif iteration >= max_iterations:
+        status = "LIMIT_REACHED"
+        print(f"\n  Statut : {status} (limite d'itérations atteinte)")
     else:
         status = "NOT_SOLVED"
     
     if not interrupted:
         print(f"Statut : {status}")
-    print(f"Temps de résolution : {t_end - t_start:.3f} secondes\n")
+    print(f"Temps de résolution : {t_end - t_start:.3f} secondes")
+    print(f"Nombre d'itérations : {iteration}")
 
     # -----------------------------------------------------------------
-    # 7. Résultats finaux
+    # Step 9 : Résultats finaux
     # -----------------------------------------------------------------
     total_reincorpore = sum(best_R_primal.values())
-    #La somme de toutes les quantités ré-incorporées par le modèle
     total_stock = sum(stock_proj_chute.values())
-    #La somme de toutes les quantités de chute disponibles
     nb_activations = len(best_O_primal)
-    #Le nombre d'activations
     
     # Calcul des violations de contraintes de stock
-    # Pour chaque (c, dc), on calcule: utilisation - stock_disponible
     violations_stock = {}
     nb_violations = 0
     total_violation = 0.0
@@ -386,14 +432,14 @@ def solve_lagrangian(stock_file, plan_file, seuil_reincorpo_mini=100.0,
     if interrupted:
         print("RÉSULTATS PARTIELS (meilleure solution trouvée avant interruption)")
     else:
-        print("RÉSULTATS (meilleure solution primale)")
+        print("RÉSULTATS FINAUX (meilleure solution primale)")
     print("=" * 70)
     print(f"  Valeur objectif (Z_dual)    : {Z_dual:.2f}")
+    print(f"  Meilleure valeur primale   : {Z_best_primal:.2f}")
+    print(f"  Gap final                   : {gap:.4f}")
     print(f"  Volume total ré-incorporé   : {total_reincorpore:.2f} kg")
     print(f"  Stock total initial disponible : {total_stock:.2f} kg")
-    print(f"  Taux de ré-incorporation (Volume total ré-incorporé/"
-          f" Stock total initial disponible) : "
-          f"{100 * total_reincorpore / total_stock:.1f} %")
+    print(f"  Taux de ré-incorporation    : {100 * total_reincorpore / total_stock:.1f} %")
     print(f"  Nombre d'activations        : {nb_activations}")
     print(f"  Contraintes de stock violées : {nb_violations} / {len(stock_proj_chute)}")
     if nb_violations > 0:
@@ -401,10 +447,6 @@ def solve_lagrangian(stock_file, plan_file, seuil_reincorpo_mini=100.0,
     
     if interrupted:
         print(f"\n  Note : Résultats basés sur {iteration-1} itérations complètes")
-        print(f"         Gap final : {gap:.4f} (ε = {epsilon})")
-    elif iteration > 5000:
-        print(f"\n  Note : Résultats basés sur {iteration-1} itérations complètes")
-        print(f"         Gap final : {gap:.4f} (ε = {epsilon})")
     
     print()
 
@@ -441,7 +483,7 @@ def solve_lagrangian(stock_file, plan_file, seuil_reincorpo_mini=100.0,
     #             if key[0] == c and best_R_primal[key] > 0.01:
     #                 print(f"    {key[3]}: {best_R_primal[key]:.0f} kg")
 
-    return best_R_primal, best_O_primal, best_primal
+    return best_R_primal, best_O_primal, Z_best_primal
 
 
 # =============================================================================
@@ -457,4 +499,4 @@ if __name__ == "__main__":
 
     seuil_mini = load_seuil_reincorpo_mini(seuil_file)
 
-    solve_lagrangian(stock_file, plan_file, seuil_mini)
+    solve_lagrangian_bis(stock_file, plan_file, seuil_mini)
