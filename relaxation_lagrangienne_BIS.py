@@ -1,6 +1,7 @@
 import csv
 import itertools
 import os
+import re
 import signal
 import sys
 import time
@@ -11,6 +12,13 @@ from datetime import datetime
 # =============================================================================
 # Chargement des données (identique au modèle initial)
 # =============================================================================
+
+def extract_product_number(product_name):
+    """
+    Extrait le numéro numérique d'un nom de produit (ex: "produit 1" -> 1)
+    """
+    match = re.search(r'\d+', product_name)
+    return int(match.group()) if match else 0
 
 def load_stock_proj_chute(filepath):
     """
@@ -183,27 +191,36 @@ def solve_lagrangian_bis(stock_file, plan_file, seuil_reincorpo_mini=100.0,
     # Plan simple : alimenter seulement les 3 premières productions avec stock suffisant
     remaining_stock = dict(stock_proj_chute)
     used_pdp = set()
+    used_activations = defaultdict(set)  # (p, dp) -> set(c) pour contrainte d'unicité
     
     simple_plan_R = {}
     simple_plan_O = {}
     
-    for (p, dp), opts in sorted(options.items())[:3]:  # 3 premières productions
+    for (p, dp), opts in sorted(options.items(), 
+                              key=lambda x: (extract_product_number(x[0][0]), x[0][1]))[:3]:  # 3 premières productions
         best_score = 0.0
         best_choice = None
+        best_volume = 0.0
         
         for (c, dc, maxi) in opts:
             avail = remaining_stock.get((c, dc), 0.0)
-            if avail >= seuil_reincorpo_mini and avail >= maxi:
-                score = maxi - 1.0  # Score simple sans lambda
+            # Volume possible selon les contraintes
+            volume_possible = min(avail, maxi)
+            
+            # Vérifier le seuil minimal d'engagement
+            if volume_possible >= seuil_reincorpo_mini:
+                score = volume_possible - 1.0  # Score simple sans lambda
                 if score > best_score:
                     best_score = score
                     best_choice = (c, dc, maxi)
+                    best_volume = volume_possible
         
-        if best_choice:
+        if best_choice and best_volume > 0:
             c, dc, maxi = best_choice
-            simple_plan_R[(c, dc, p, dp)] = maxi
+            simple_plan_R[(c, dc, p, dp)] = best_volume
             simple_plan_O[(p, dp, c)] = 1
-            remaining_stock[(c, dc)] -= maxi
+            remaining_stock[(c, dc)] -= best_volume
+            used_activations[(p, dp)].add(c)
             used_pdp.add((p, dp))
     
     # Calculer le gain de ce plan simple
@@ -251,21 +268,30 @@ def solve_lagrangian_bis(stock_file, plan_file, seuil_reincorpo_mini=100.0,
         usage_brut = defaultdict(float)   # (c, dc) -> somme des R_brut
         sum_best_scores = 0.0
 
-        for (p, dp), opts in options.items():
+        for (p, dp), opts in sorted(options.items(), 
+                                  key=lambda x: (extract_product_number(x[0][0]), x[0][1])):
             best_score = 0.0
             best_choice = None
+            best_volume = 0.0
 
             for (c, dc, maxi) in opts:
-                score = (1.0 - lam[(c, dc)]) * maxi - 1.0
+                # Calcul du volume optimal selon les contraintes
+                stock_disponible = stock_proj_chute.get((c, dc), 0.0)
+                # Volume maximal qu'on peut utiliser : min(stock, maxi)
+                volume_possible = min(stock_disponible, maxi)
+                
+                # Score basé sur le volume effectivement utilisé
+                score = (1.0 - lam[(c, dc)]) * volume_possible - 1.0
                 if score > best_score:
                     best_score = score
                     best_choice = (c, dc, maxi)
+                    best_volume = volume_possible
 
-            if best_choice is not None:
+            if best_choice is not None and best_volume > 0:
                 c, dc, maxi = best_choice
                 O_brut[(p, dp, c)] = 1
-                R_brut[(c, dc, p, dp)] = maxi
-                usage_brut[(c, dc)] += maxi
+                R_brut[(c, dc, p, dp)] = best_volume  # Utiliser volume_possible, pas maxi
+                usage_brut[(c, dc)] += best_volume
                 sum_best_scores += best_score
 
         # =============================================================
@@ -278,7 +304,7 @@ def solve_lagrangian_bis(stock_file, plan_file, seuil_reincorpo_mini=100.0,
         Z_dual = lambda_stock_sum + sum_best_scores
 
         # =============================================================
-        # Step 7 : Test de Faisabilité strict + Heuristique de réparation
+        # Step 7 : Test de Faisabilité strict + Heuristique de réparation (appliquée à chaque itération)
         # =============================================================
         # Vérifier si Σ R_brut ≤ stock_proj_chute pour toutes les chutes
         feasible = True
@@ -288,47 +314,60 @@ def solve_lagrangian_bis(stock_file, plan_file, seuil_reincorpo_mini=100.0,
                 feasible = False
                 break
         
+        # Appliquer l'heuristique de réparation À CHAQUE ITÉRATION pour améliorer Z_best_primal
+        R_repare = {}
+        O_repare = {}
+        remaining_stock = dict(stock_proj_chute)
+        used_activations = defaultdict(set)  # (p, dp) -> set(c) pour contrainte d'unicité
+        
+        # Appliquer le même principe que l'heuristique gloutonne initiale
+        for (p, dp), opts in sorted(options.items(), 
+                                  key=lambda x: (extract_product_number(x[0][0]), x[0][1])):
+            best_score = -float("inf")
+            best_choice = None
+            best_volume = 0.0
+            
+            # Vérifier la contrainte d'unicité : pas plus d'une chute par (p, dp)
+            if len(used_activations[(p, dp)]) >= 1:
+                continue  # Déjà une chute utilisée pour cette production
+            
+            for (c, dc, maxi) in opts:
+                avail = remaining_stock.get((c, dc), 0.0)
+                
+                # Volume possible selon les contraintes
+                volume_possible = min(avail, maxi)
+                
+                # Vérifier le seuil minimal d'engagement
+                if volume_possible >= seuil_reincorpo_mini:
+                    # Score sans lambda (heuristique pure)
+                    score = volume_possible - 1.0
+                    if score > best_score:
+                        best_score = score
+                        best_choice = (c, dc, maxi)
+                        best_volume = volume_possible
+            
+            if best_choice and best_volume > 0:
+                c, dc, maxi = best_choice
+                R_repare[(c, dc, p, dp)] = best_volume
+                O_repare[(p, dp, c)] = 1
+                remaining_stock[(c, dc)] -= best_volume
+                used_activations[(p, dp)].add(c)
+        
+        # Calculer le score de la solution réparée et mettre à jour Z_best_primal
+        if R_repare:
+            Z_primal_repare = sum(R_repare.values()) - len(O_repare)
+            if Z_primal_repare > Z_best_primal:
+                Z_best_primal = Z_primal_repare
+                best_R_primal = dict(R_repare)
+                best_O_primal = dict(O_repare)
+        
+        # Si la solution brute était déjà faisable, vérifier aussi si elle améliore Z_best_primal
         if feasible:
-            # Solution naturellement valide
             Z_primal = sum(R_brut.values()) - len(O_brut)
             if Z_primal > Z_best_primal:
                 Z_best_primal = Z_primal
                 best_R_primal = dict(R_brut)
                 best_O_primal = dict(O_brut)
-        else:
-            # Solution non-faisable : appliquer l'heuristique de réparation
-            # pour trouver une meilleure valeur Meilleur
-            R_repare = {}
-            O_repare = {}
-            remaining_stock = dict(stock_proj_chute)
-            
-            # Appliquer le même principe que l'heuristique gloutonne initiale
-            for (p, dp), opts in sorted(options.items()):
-                best_score = -float("inf")
-                best_choice = None
-                
-                for (c, dc, maxi) in opts:
-                    avail = remaining_stock.get((c, dc), 0.0)
-                    if avail >= seuil_reincorpo_mini and avail >= maxi:
-                        # Score sans lambda (heuristique pure)
-                        score = maxi - 1.0
-                        if score > best_score:
-                            best_score = score
-                            best_choice = (c, dc, maxi)
-                
-                if best_choice:
-                    c, dc, maxi = best_choice
-                    R_repare[(c, dc, p, dp)] = maxi
-                    O_repare[(p, dp, c)] = 1
-                    remaining_stock[(c, dc)] -= maxi
-            
-            # Calculer le score de la solution réparée
-            if R_repare:
-                Z_primal_repare = sum(R_repare.values()) - len(O_repare)
-                if Z_primal_repare > Z_best_primal:
-                    Z_best_primal = Z_primal_repare
-                    best_R_primal = dict(R_repare)
-                    best_O_primal = dict(O_repare)
 
         # =============================================================
         # Step 8 : Sous-gradient et Mise à jour
@@ -349,7 +388,7 @@ def solve_lagrangian_bis(stock_file, plan_file, seuil_reincorpo_mini=100.0,
             if no_improve_count >= 5:
                 alpha = alpha / 2.0
                 no_improve_count = 0
-                print(f"  α réduit à {alpha:.4f} après 5 itérations sans battre le record")
+                print(f"  alpha réduit à {alpha:.4f} après 5 itérations sans battre le record")
         
         last_Z_dual = Z_dual
 
@@ -444,6 +483,95 @@ def solve_lagrangian_bis(stock_file, plan_file, seuil_reincorpo_mini=100.0,
     print(f"  Contraintes de stock violées : {nb_violations} / {len(stock_proj_chute)}")
     if nb_violations > 0:
         print(f"  Volume total en violation    : {total_violation:.2f} kg")
+    
+    # Vérifications complètes de toutes les contraintes du modèle
+    print("\n" + "=" * 70)
+    print("VÉRIFICATION COMPLÈTE DES CONTRAINTES DU MODÈLE")
+    print("=" * 70)
+    
+    # 1. Contrainte de stock (déjà vérifiée ci-dessus)
+    print(f"OK Contrainte de stock           : {len(stock_proj_chute) - nb_violations}/{len(stock_proj_chute)} respectées")
+    
+    # 2. Contrainte de capacité : R <= reincorpo_maxi * O
+    violations_capacite = 0
+    total_violations_capacite = 0.0
+    for (p, dp, c), O_val in best_O_primal.items():
+        if O_val == 1:
+            # Calculer la somme des R pour ce (p, dp, c)
+            somme_R = 0.0
+            for (c2, dc, p2, dp2), R_val in best_R_primal.items():
+                if p2 == p and dp2 == dp and c2 == c:
+                    somme_R += R_val
+            
+            # Vérifier la contrainte de capacité
+            capacite_max = reincorpo_maxi.get((p, dp, c), 0.0)
+            if somme_R > capacite_max + 1e-6:
+                violations_capacite += 1
+                total_violations_capacite += (somme_R - capacite_max)
+    
+    print(f"OK Contrainte de capacité       : {len(best_O_primal) - violations_capacite}/{len(best_O_primal)} respectées")
+    if violations_capacite > 0:
+        print(f"  Volume total en dépassement : {total_violations_capacite:.2f} kg")
+    
+    # 3. Contrainte de seuil : somme R >= seuil_mini * O
+    violations_seuil = 0
+    total_violations_seuil = 0.0
+    for (p, dp, c), O_val in best_O_primal.items():
+        if O_val == 1:
+            # Calculer la somme des R pour ce (p, dp, c)
+            somme_R = 0.0
+            for (c2, dc, p2, dp2), R_val in best_R_primal.items():
+                if p2 == p and dp2 == dp and c2 == c:
+                    somme_R += R_val
+            
+            # Vérifier la contrainte de seuil
+            if somme_R < seuil_reincorpo_mini - 1e-6:
+                violations_seuil += 1
+                total_violations_seuil += (seuil_reincorpo_mini - somme_R)
+    
+    print(f"OK Contrainte de seuil          : {len(best_O_primal) - violations_seuil}/{len(best_O_primal)} respectées")
+    if violations_seuil > 0:
+        print(f"  Volume total sous le seuil  : {total_violations_seuil:.2f} kg")
+    
+    # 4. Contrainte d'unicité : somme O <= 1 pour chaque (p, dp)
+    violations_unicite = 0
+    total_violations_unicite = 0
+    # Compter le nombre d'activations par (p, dp)
+    activations_by_pdp = defaultdict(int)
+    for (p, dp, c) in best_O_primal:
+        if best_O_primal[(p, dp, c)] == 1:
+            activations_by_pdp[(p, dp)] += 1
+    
+    for (p, dp), count in activations_by_pdp.items():
+        if count > 1:
+            violations_unicite += 1
+            total_violations_unicite += (count - 1)
+    
+    total_pdp_with_activations = len(activations_by_pdp)
+    print(f"OK Contrainte d'unicité         : {total_pdp_with_activations - violations_unicite}/{total_pdp_with_activations} respectées")
+    if violations_unicite > 0:
+        print(f"  Nombre total d'activations en trop : {total_violations_unicite}")
+    
+    # 5. Domaine des variables R : 0 <= R <= min(stock, maxi)
+    violations_domaine_R = 0
+    for (c, dc, p, dp), R_val in best_R_primal.items():
+        stock_max = stock_proj_chute.get((c, dc), 0.0)
+        capacite_max = reincorpo_maxi.get((p, dp, c), 0.0)
+        max_possible = min(stock_max, capacite_max)
+        
+        if R_val < -1e-6 or R_val > max_possible + 1e-6:
+            violations_domaine_R += 1
+    
+    print(f"OK Domaine des variables R      : {len(best_R_primal) - violations_domaine_R}/{len(best_R_primal)} respectées")
+    
+    # Résumé global
+    total_violations_all = nb_violations + violations_capacite + violations_seuil + violations_unicite + violations_domaine_R
+    print(f"\nRESUME GLOBAL               : {len(best_R_primal) + len(best_O_primal) + len(stock_proj_chute) - total_violations_all}/{len(best_R_primal) + len(best_O_primal) + len(stock_proj_chute)} contraintes respectées")
+    
+    if total_violations_all == 0:
+        print("TOUTES LES CONTRAINTES DU MODELE SONT RESPECTEES !")
+    else:
+        print(f"ATTENTION : {total_violations_all} violations détectées")
     
     if interrupted:
         print(f"\n  Note : Résultats basés sur {iteration-1} itérations complètes")

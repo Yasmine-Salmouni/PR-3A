@@ -75,3 +75,58 @@ Prends tes décisions brutes $R_{brut}$ et somme-les par type de chute.
     ◦ Passe à $k = k + 1$ et recommence au Step 4.
 **--- FIN ---**
 • **Step 9 :** Affiche le plan de production associé à ton dernier $Z_{best\_primal}$.
+À l'itération 1, ta Borne Duale ($Z_{dual}$) est de **17 994.60**. Sachant que le solveur exact trouve l'optimum à **15 790.00**, ta première estimation est extrêmement proche du but ! Cela prouve que tes équations de l'Étape A sont correctes.
+
+Le problème se situe dans la boucle d'apprentissage (la mise à jour des $\lambda$). Voici les 3 erreurs flagrantes visibles dans ta console et comment les corriger.
+
+### 1. Le "Meilleur" (Z_best_primal) reste bloqué à 451.00
+
+**Ce que montre la console :** Ton `Meilleur` reste à 451.00 de l'itération 1 à 300. Cela signifie que le fameux "Test de Faisabilité Strict" (l'Étape 7) ne trouve *absolument jamais* une solution qui respecte le stock par hasard.
+
+**La conséquence :** La formule du pas $t_k$ utilise ce `Meilleur` comme cible : $Z_{dual} - 451$. Comme 451 est très bas par rapport à 15 790, le calcul croit qu'il y a un gouffre énorme (un Gap de 17 000) et fait des pas de géant, ce qui détruit tes $\lambda$.
+
+**La Solution (Réintègre ton Heuristique) :** À chaque itération, juste après l'Étape A :
+
+1. Prends les choix de ton Étape A.
+2. Fais-les passer dans ton **ancienne heuristique de réparation** (qui coupe les volumes pour respecter le stock).
+3. Calcule le score de cette solution réparée.
+4. Si ce score est $> Meilleur$, alors tu mets à jour `Meilleur`.
+    
+    *(Attention : tu ne modifies pas les choix de l'Étape A pour la suite du calcul, tu utilises cette heuristique UNIQUEMENT pour trouver une bonne valeur `Meilleur` à donner à la formule mathématique).*
+    
+
+### 2. L'explosion de la Borne Duale (Les $\lambda$ deviennent fous)
+
+**Ce que montre la console :** Ton $Z_{dual}$ part de 17 994, puis s'envole à 28 000, 44 000, et monte jusqu'à 69 808 ! Cela veut dire que tes pénalités $\lambda$ ont pris des valeurs gigantesques et complètement fausses.
+
+**La conséquence :** Ton algorithme surréagit massivement.
+
+**La Solution :**
+
+Il faut "calmer" le pas d'apprentissage. Dans ton code, modifie l'initialisation de $\alpha$ (le paramètre $u$). Au lieu de commencer à `2.0`, commence avec **$\alpha = 0.1$** ou même **$0.05$**. Les volumes de gomme génèrent des erreurs (sous-gradients $g$) en centaines de kilos, ce qui rend le pas de base beaucoup trop violent.
+
+### 3. La règle de réduction de $\alpha$ ne s'active pas assez vite
+
+**Ce que montre la console :** Ton paramètre $\alpha$ reste à `2.0` jusqu'à l'itération 280. Il est censé se diviser par 2 "s'il n'y a pas d'amélioration pendant 5 itérations".
+
+**La conséquence :** Comme ton $Z_{dual}$ fait le yoyo (il monte à 62 190, puis redescend à 60 067), ton code considère que "redescendre un peu" est une amélioration, donc il réinitialise son compteur et ne divise jamais $\alpha$.
+
+**La Solution :** La règle doit observer **le meilleur $Z_{dual}$ global**.
+
+Dans ton code, crée une variable `best_Z_dual_ever = 999999`.
+
+À chaque itération, si ton nouveau $Z_{dual}$ est *strictement inférieur* à `best_Z_dual_ever`, tu mets à jour `best_Z_dual_ever` et tu remets le compteur à zéro. Si pendant 5 ou 10 itérations, tu n'arrives pas à battre ce record absolu, tu divises $\alpha$ par 2.
+
+### 4. Un bug d'affichage mineur
+
+Remarque que tes colonnes `Z_dual` et `Z_primal` affichent exactement les mêmes chiffres (ex: 28423.93 pour les deux à l'itération 8). Tu as sûrement passé la même variable à ton `print` dans la console.
+
+---
+
+**Ce que tu dois faire pour ton prochain test :**
+
+1. Remets ton heuristique gloutonne pour calculer la valeur `Meilleur` à chaque itération.
+2. Initialise $\alpha = 0.1$ (au lieu de 2.0).
+3. Corrige la condition de division de $\alpha$ (comparer au record absolu de $Z_{dual}$).
+
+Fais ces trois modifications et relance. Tu vas voir ton Gap se réduire drastiquement et la valeur `Meilleur` grimper rapidement vers les 15 000 !
